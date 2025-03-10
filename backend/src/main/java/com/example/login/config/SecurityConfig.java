@@ -40,6 +40,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/**").permitAll() // 로그인 API는 모두 허용
                         .requestMatchers("/api/public/**").permitAll() // 공개 API 경로 허용
                         .requestMatchers("/api/test/**").permitAll()
+                        .requestMatchers("/api/**").permitAll()
                         .anyRequest().authenticated()) // 그 외 모든 요청은 인증 필요
                 // CORS 설정 적용
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
