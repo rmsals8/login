@@ -1,0 +1,44 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  AWS_REGION: "ap-northeast-2"
+  ECR_REPOSITORY: "gmna-deployment"
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+  AWS_ACCOUNT_ID: "992382369527"
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - apk add --no-cache curl python3 py3-pip
+    - pip install awscli
+    - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+  script:
+    - docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG .
+    - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+    - docker tag $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+    - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+  only:
+    - main
+
+deploy:
+  stage: deploy
+  image: 
+    name: amazon/aws-cli
+    entrypoint: [""]
+  before_script:
+    - curl -o kubectl https://amazon-eks.s3.us-west-2.amazonaws.com/1.21.2/2021-07-05/bin/linux/amd64/kubectl
+    - chmod +x kubectl
+    - mv kubectl /usr/local/bin/
+    - aws eks update-kubeconfig --name gmna-cluster --region $AWS_REGION
+  script:
+    - sed -i "s|image:.*|image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG|g" kubernetes/deployment.yaml
+    - kubectl apply -f kubernetes/deployment.yaml
+    - kubectl apply -f kubernetes/service.yaml
+    - kubectl rollout status deployment/app-deployment
+  only:
+    - main
