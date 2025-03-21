@@ -1,44 +1,83 @@
 stages:
   - build
+  - test
+  - package
   - deploy
 
 variables:
-  AWS_REGION: "ap-northeast-2"
-  ECR_REPOSITORY: "gmna-deployment"
-  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
-  AWS_ACCOUNT_ID: "992382369527"
+  # 기본 환경 변수 설정
+  DOCKER_REPOSITORY: gmna974/deployment
+  SPRING_DATASOURCE_URL: jdbc:mariadb://svc.sel4.cloudtype.app:30333/trip_helper
+  SPRING_DATASOURCE_USERNAME: rmsals
+  SPRING_DATASOURCE_PASSWORD: 1q2w3e
+  SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.mariadb.jdbc.Driver
 
 build:
   stage: build
-  image: docker:latest
-  services:
-    - docker:dind
-  before_script:
-    - apk add --no-cache curl python3 py3-pip
-    - pip install awscli
-    - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+  image: gradle:jdk17-alpine
   script:
-    - docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG .
-    - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
-    - docker tag $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
-    - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+    - echo "Building the application..."
+    - gradle clean build -x test
+  artifacts:
+    paths:
+      - backend/build/libs/*.jar
+    expire_in: 1 hour
+
+test:
+  stage: test
+  image: gradle:jdk17-alpine
+  script:
+    - echo "Running tests..."
+    - gradle test
+  artifacts:
+    paths:
+      - backend/build/reports/tests/
+
+package:
+  stage: package
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  script:
+    - echo "Building Docker image..."
+    - docker build --build-arg SPRING_DATASOURCE_URL=${SPRING_DATASOURCE_URL}
+                  --build-arg SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME}
+                  --build-arg SPRING_DATASOURCE_PASSWORD=${SPRING_DATASOURCE_PASSWORD}
+                  --build-arg SPRING_DATASOURCE_DRIVER_CLASS_NAME=${SPRING_DATASOURCE_DRIVER_CLASS_NAME}
+                  -t ${DOCKER_REPOSITORY}:$CI_COMMIT_SHORT_SHA .
+    - echo "Logging in to Docker Hub..."
+    - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+    - echo "Pushing the Docker image..."
+    - docker push ${DOCKER_REPOSITORY}:$CI_COMMIT_SHORT_SHA
+    - docker tag ${DOCKER_REPOSITORY}:$CI_COMMIT_SHORT_SHA ${DOCKER_REPOSITORY}:latest
+    - docker push ${DOCKER_REPOSITORY}:latest
   only:
-    - Mybatis-Jpa
+    - main
 
 deploy:
   stage: deploy
-  image: 
-    name: amazon/aws-cli
-    entrypoint: [""]
+  image: alpine:latest
   before_script:
-    - curl -o kubectl https://amazon-eks.s3.us-west-2.amazonaws.com/1.21.2/2021-07-05/bin/linux/amd64/kubectl
-    - chmod +x kubectl
-    - mv kubectl /usr/local/bin/
-    - aws eks update-kubeconfig --name gmna-cluster --region $AWS_REGION
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H $DEPLOYMENT_SERVER_IP >> ~/.ssh/known_hosts
   script:
-    - sed -i "s|image:.*|image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG|g" kubernetes/deployment.yaml
-    - kubectl apply -f kubernetes/deployment.yaml
-    - kubectl apply -f kubernetes/service.yaml
-    - kubectl rollout status deployment/app-deployment
+    - echo "Deploying the application..."
+    - ssh $DEPLOYMENT_USER@$DEPLOYMENT_SERVER_IP "docker pull ${DOCKER_REPOSITORY}:latest"
+    - ssh $DEPLOYMENT_USER@$DEPLOYMENT_SERVER_IP "docker stop app-container || true"
+    - ssh $DEPLOYMENT_USER@$DEPLOYMENT_SERVER_IP "docker rm app-container || true"
+    - >
+      ssh $DEPLOYMENT_USER@$DEPLOYMENT_SERVER_IP "docker run -d --name app-container 
+      -p 8080:8080 
+      -e SPRING_DATASOURCE_URL=${SPRING_DATASOURCE_URL} 
+      -e SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME} 
+      -e SPRING_DATASOURCE_PASSWORD=${SPRING_DATASOURCE_PASSWORD} 
+      -e SPRING_DATASOURCE_DRIVER_CLASS_NAME=${SPRING_DATASOURCE_DRIVER_CLASS_NAME} 
+      ${DOCKER_REPOSITORY}:latest"
   only:
     - main
+  environment:
+    name: production
+    url: http://$DEPLOYMENT_SERVER_IP:8080

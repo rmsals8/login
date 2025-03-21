@@ -19,5 +19,5 @@ public interface LogRepository extends JpaRepository<Log, Long> {
 
     List<Log> findByUser_UserIdAndActionType(Long userId, String actionType);
 
-    Log save(Log log);
+    // Log save(Log log);
 }
