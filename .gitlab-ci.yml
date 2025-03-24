@@ -1,0 +1,55 @@
+stages:
+  - build
+  - deploy
+
+# 환경 변수는 GitLab CI/CD 변수 설정에서 이미 설정되어 있으므로 여기서는 생략합니다.
+# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, 
+# ECR_REPOSITORY, DOCKER_IMAGE_TAG, EKS_CLUSTER_NAME 등이 이미 설정되어 있습니다.
+
+build:
+  stage: build
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  before_script:
+    - apk add --no-cache curl jq python3 py3-pip bash
+    - pip install awscli
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REPOSITORY
+  script:
+    - docker build -t $ECR_REPOSITORY:$DOCKER_IMAGE_TAG .
+    - docker push $ECR_REPOSITORY:$DOCKER_IMAGE_TAG
+  only:
+    - main
+    - gradle_login
+
+deploy:
+  stage: deploy
+  image: 
+    name: amazon/aws-cli
+    entrypoint: [""]
+  before_script:
+    - curl -LO "https://dl.k8s.io/release/stable.txt"
+    - curl -LO "https://dl.k8s.io/release/$(cat stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl
+    - mv kubectl /usr/local/bin/
+    - aws eks update-kubeconfig --region $AWS_DEFAULT_REGION --name $EKS_CLUSTER_NAME
+    # 브랜치별로 다른 배포 파일 설정
+    - |
+      if [[ "$CI_COMMIT_BRANCH" == "main" ]]; then
+        DEPLOYMENT_FILE=deployment.yaml
+      elif [[ "$CI_COMMIT_BRANCH" == "gradle_login" ]]; then
+        DEPLOYMENT_FILE=deployment-gradle.yaml
+        # 임시로 deployment 파일 복사 및 이미지 태그 수정
+        cp deployment.yaml $DEPLOYMENT_FILE
+        sed -i "s|:coop|:$DOCKER_IMAGE_TAG|g" $DEPLOYMENT_FILE
+      else
+        DEPLOYMENT_FILE=deployment.yaml
+        # 임시로 deployment 파일 복사 및 이미지 태그 수정
+        cp deployment.yaml $DEPLOYMENT_FILE
+        sed -i "s|:coop|:$DOCKER_IMAGE_TAG|g" $DEPLOYMENT_FILE
+      fi
+  script:
+    - kubectl apply -f $DEPLOYMENT_FILE
+  only:
+    - main
+    - gradle_login
